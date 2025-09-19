@@ -1,4 +1,4 @@
-use crate::state::{Allocation, UserStatus, ValidatorInfo};
+use crate::state::{UserStatus, ValidatorInfo};
 use cosmwasm_schema::{cw_serde, QueryResponses};
 use cosmwasm_std::{Attribute, Binary, Uint128, Uint256};
 
@@ -16,9 +16,6 @@ pub struct MigrateMsg {}
 pub enum ExecuteMsg {
     SetFee {
         new_fee: u16,
-    },
-    SetDistributionFee {
-        new_distribution_fee: u16,
     },
     SetMinimumDeposit {
         new_min_deposit: Uint128,
@@ -90,18 +87,6 @@ pub enum ExecuteMsg {
     Pause,
     Unpause,
     CompoundRewards,
-    Allocate {
-        recipient: String,
-        amount: Uint128,
-    },
-    Deallocate {
-        recipient: String,
-        amount: Uint128,
-    },
-    DistributeRewards {
-        recipient: String,
-        in_inj: bool,
-    },
     // Internal messages
     Restake {
         amount: Uint128,
@@ -109,12 +94,6 @@ pub enum ExecuteMsg {
     },
     EmitEvent {
         attributes: Vec<Attribute>,
-    },
-    // Test messages
-    #[cfg(any(test, feature = "test"))]
-    TestAllocate {
-        recipient: String,
-        amount: Uint128,
     },
     #[cfg(any(test, feature = "test"))]
     TestMint {
@@ -168,15 +147,6 @@ pub enum QueryMsg {
     GetClaimableAssets { user: String },
     #[returns(GetMaxWithdrawResponse)]
     GetMaxWithdraw { user: String },
-    #[returns(GetAllocationsResponse)]
-    GetAllocations { user: String },
-    #[returns(GetTotalAllocatedResponse)]
-    GetTotalAllocated { user: String },
-    #[returns(GetDistributionAmountsResponse)]
-    GetDistributionAmounts {
-        distributor: String,
-        recipient: Option<String>,
-    },
 }
 
 #[cw_serde]
@@ -185,7 +155,6 @@ pub struct GetStakerInfoResponse {
     pub default_validator: String,
     pub treasury: String,
     pub fee: u16,
-    pub distribution_fee: u16,
     pub min_deposit: Uint128,
     pub is_paused: bool,
 }
@@ -254,23 +223,4 @@ pub struct GetMaxWithdrawResponse {
 #[cw_serde]
 pub struct GetClaimableAmountResponse {
     pub claimable_amount: Uint128,
-}
-
-#[cw_serde]
-pub struct GetAllocationsResponse {
-    pub allocations: Vec<Allocation>,
-}
-
-#[cw_serde]
-pub struct GetTotalAllocatedResponse {
-    pub total_allocated_amount: Uint128,
-    pub total_allocated_share_price_num: Uint256,
-    pub total_allocated_share_price_denom: Uint256,
-}
-
-#[cw_serde]
-pub struct GetDistributionAmountsResponse {
-    pub inj_amount: Uint128,
-    pub truinj_amount: Uint128,
-    pub distribution_fee: Uint128,
 }

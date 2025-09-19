@@ -15,13 +15,12 @@ use cw_multi_test::{
 use injective_staker::constants::{INJ, ONE_INJ};
 use injective_staker::contract::{execute, instantiate, query};
 use injective_staker::msg::{
-    ExecuteMsg, GetAllocationsResponse, GetClaimableAmountResponse, GetCurrentUserStatusResponse,
-    GetDistributionAmountsResponse, GetIsAgentResponse, GetIsBlacklistedResponse,
-    GetIsWhitelistedResponse, GetMaxWithdrawResponse, GetSharePriceResponse, GetStakerInfoResponse,
-    GetTotalAllocatedResponse, GetTotalRewardsResponse, GetTotalStakedResponse,
+    ExecuteMsg, GetClaimableAmountResponse, GetCurrentUserStatusResponse, GetIsAgentResponse,
+    GetIsBlacklistedResponse, GetIsWhitelistedResponse, GetMaxWithdrawResponse,
+    GetSharePriceResponse, GetStakerInfoResponse, GetTotalRewardsResponse, GetTotalStakedResponse,
     GetTotalSupplyResponse, InstantiateMsg, QueryMsg,
 };
-use injective_staker::state::{Allocation, UserStatus};
+use injective_staker::state::UserStatus;
 use injective_staker::SHARE_PRICE_SCALING_FACTOR;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -409,89 +408,6 @@ pub fn redelegate(
     app.execute(sender.clone(), cosmos_msg.into())
 }
 
-pub fn set_up_allocation(
-    app: &mut App,
-    owner: &Addr,
-    contract_addr: &Addr,
-    inj_to_stake: u128,
-    user: &Addr,
-) {
-    mint_inj(app, user, inj_to_stake);
-    whitelist_user(app, contract_addr, owner, user);
-    stake(app, user, contract_addr, inj_to_stake).unwrap();
-}
-
-pub fn set_up_test_allocation(
-    app: &mut App,
-    owner: &Addr,
-    contract_addr: &Addr,
-    user: &Addr,
-    recipient: &Addr,
-    amount: u128,
-) {
-    mint_inj(app, user, amount);
-
-    let is_whitelisted = is_user_whitelisted(app, user, contract_addr);
-    if !is_whitelisted {
-        whitelist_user(app, contract_addr, owner, user);
-    }
-
-    stake(app, user, contract_addr, amount).unwrap();
-
-    // call TestAllocate to bypass the min allocation check
-    let cosmos_msg = WasmMsg::Execute {
-        contract_addr: contract_addr.to_string(),
-        msg: to_json_binary(&ExecuteMsg::TestAllocate {
-            recipient: recipient.to_string(),
-            amount: amount.into(),
-        })
-        .unwrap(),
-        funds: vec![],
-    };
-    let res = app.execute(user.clone(), cosmos_msg.into());
-    assert!(res.is_ok());
-}
-
-pub fn allocate(
-    app: &mut App,
-    sender: &Addr,
-    contract_addr: &Addr,
-    amount: u128,
-    recipient: &Addr,
-) -> Result<AppResponse, AnyError> {
-    let msg = ExecuteMsg::Allocate {
-        recipient: recipient.to_string(),
-        amount: amount.into(),
-    };
-
-    let cosmos_msg = WasmMsg::Execute {
-        contract_addr: contract_addr.to_string(),
-        msg: to_json_binary(&msg).unwrap(),
-        funds: vec![],
-    };
-    app.execute(sender.clone(), cosmos_msg.into())
-}
-
-pub fn deallocate(
-    app: &mut App,
-    sender: &Addr,
-    contract_addr: &Addr,
-    amount: u128,
-    recipient: &Addr,
-) -> Result<AppResponse, AnyError> {
-    let msg = ExecuteMsg::Deallocate {
-        recipient: recipient.to_string(),
-        amount: amount.into(),
-    };
-
-    let cosmos_msg = WasmMsg::Execute {
-        contract_addr: contract_addr.to_string(),
-        msg: to_json_binary(&msg).unwrap(),
-        funds: vec![],
-    };
-    app.execute(sender.clone(), cosmos_msg.into())
-}
-
 pub fn claim(app: &mut App, sender: &Addr, contract_addr: &Addr) -> Result<AppResponse, AnyError> {
     let msg = ExecuteMsg::Claim {};
 
@@ -651,34 +567,6 @@ pub fn unpause(app: &mut App, contract: &Addr, owner: &Addr) {
     assert!(response.is_ok());
 }
 
-pub fn distribute_rewards(
-    app: &mut App,
-    staker_addr: &Addr,
-    distributor: &Addr,
-    recipient: &Addr,
-    in_inj: bool,
-    inj_amount: Option<u128>,
-) {
-    let coins_attached = inj_amount
-        .map(|amount| vec![coin(amount, INJ)])
-        .unwrap_or_default();
-    let dist_res = app.execute(
-        distributor.clone(),
-        WasmMsg::Execute {
-            contract_addr: staker_addr.to_string(),
-            msg: to_json_binary(&ExecuteMsg::DistributeRewards {
-                recipient: recipient.to_string(),
-                in_inj,
-            })
-            .unwrap(),
-            funds: coins_attached,
-        }
-        .into(),
-    );
-
-    assert!(dist_res.is_ok());
-}
-
 pub fn is_user_whitelisted(app: &App, user: &Addr, contract: &Addr) -> bool {
     let response: GetIsWhitelistedResponse = app
         .wrap()
@@ -803,40 +691,6 @@ pub fn get_total_staked(app: &App, contract_addr: &Addr) -> Uint128 {
     total_staked.total_staked
 }
 
-pub fn get_allocations(app: &App, contract_addr: &Addr, user: &Addr) -> Vec<Allocation> {
-    let allocations: GetAllocationsResponse = app
-        .wrap()
-        .query_wasm_smart(
-            contract_addr.clone(),
-            &QueryMsg::GetAllocations {
-                user: user.to_string(),
-            },
-        )
-        .unwrap();
-    allocations.allocations
-}
-
-pub fn get_total_allocated(
-    app: &App,
-    contract_addr: &Addr,
-    user: &Addr,
-) -> (Uint128, Uint256, Uint256) {
-    let total_allocated: GetTotalAllocatedResponse = app
-        .wrap()
-        .query_wasm_smart(
-            contract_addr.clone(),
-            &QueryMsg::GetTotalAllocated {
-                user: user.to_string(),
-            },
-        )
-        .unwrap();
-    (
-        total_allocated.total_allocated_amount,
-        total_allocated.total_allocated_share_price_num,
-        total_allocated.total_allocated_share_price_denom,
-    )
-}
-
 pub fn get_total_rewards(app: &App, contract_addr: &Addr) -> Uint128 {
     let total_rewards: GetTotalRewardsResponse = app
         .wrap()
@@ -915,30 +769,6 @@ pub fn get_max_withdraw(app: &App, staker_addr: &Addr, user: &Addr) -> u128 {
     response.max_withdraw.u128()
 }
 
-pub fn get_distribution_amounts(
-    app: &App,
-    staker_addr: &Addr,
-    distributor: &Addr,
-    recipient: Option<&Addr>,
-) -> (u128, u128, u128) {
-    let response: GetDistributionAmountsResponse = app
-        .wrap()
-        .query_wasm_smart(
-            staker_addr.clone(),
-            &QueryMsg::GetDistributionAmounts {
-                distributor: distributor.to_string(),
-                recipient: recipient.map(|a| a.to_string()),
-            },
-        )
-        .unwrap();
-
-    (
-        response.inj_amount.u128(),
-        response.truinj_amount.u128(),
-        response.distribution_fee.u128(),
-    )
-}
-
 pub fn move_days_forward(app: &mut App, days: u64) {
     app.update_block(|block| {
         block.time = block.time.plus_seconds(days * 24 * 60 * 60);
@@ -966,20 +796,6 @@ pub fn set_fee(app: &mut App, contract_addr: &Addr, owner: &Addr, new_fee: u16) 
     let msg = WasmMsg::Execute {
         contract_addr: contract_addr.to_string(),
         msg: to_json_binary(&ExecuteMsg::SetFee { new_fee }).unwrap(),
-        funds: vec![],
-    };
-
-    let response = app.execute(owner.clone(), msg.into());
-    assert!(response.is_ok());
-}
-
-pub fn set_dist_fee(app: &mut App, contract_addr: &Addr, owner: &Addr, new_distribution_fee: u16) {
-    let msg = WasmMsg::Execute {
-        contract_addr: contract_addr.to_string(),
-        msg: to_json_binary(&ExecuteMsg::SetDistributionFee {
-            new_distribution_fee,
-        })
-        .unwrap(),
         funds: vec![],
     };
 

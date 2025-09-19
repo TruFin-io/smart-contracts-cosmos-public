@@ -113,23 +113,8 @@ pub enum ContractError {
     #[error("Insufficient funds on staker")]
     InsufficientStakerFunds,
 
-    #[error("Cannot allocate to self")]
-    InvalidRecipient,
-
-    #[error("Cannot allocate under 1 INJ")]
-    AllocationUnderOneInj,
-
-    #[error("No Allocation to recipient")]
-    NoAllocationToRecipient,
-
-    #[error("Cannot deallocate more than is allocated")]
-    ExcessiveDeallocation,
-
     #[error("No withdrawals to claim")]
     NothingToClaim,
-
-    #[error("No allocations")]
-    NoAllocations,
 
     #[error("Validator is not in validator set")]
     NotInValidatorSet,

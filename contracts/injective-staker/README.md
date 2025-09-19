@@ -2,27 +2,13 @@
 
 The TruFin INJ staking vault offers users a reliable way of staking INJ on the Injective network.
 On staking INJ via the vault, users receive a receipt in the form of the **reward-bearing TruINJ token**.
-In addition to the liquid staking functionality, the TruFin staker supports delegating to different validators as well as the allocation of rewards to different parties.
-We briefly present these 2 features as well as share some notes that explain the rationale for some of our decisions.
+In addition to the liquid staking functionality, the TruFin staker supports delegating to different validators.
 
 ## Whitelist
 
 Users of our vault must be whitelisted to ensure they have completed offline AML/KYC checks and other onboarding requirements.
 The contract will verify if the user is included in our whitelist at the time operations such as staking, unstaking, and others are performed.
 The use of a whitelist grants TruFin permission to revoke a whitelist status for a malicious user in order to protect the overall integrity of the protocol.
-
-## Allocations
-
-Each user (then called the *distributor*) can opt to send some or all of the rewards from staking INJ to another user or wallet address (the *recipient*).
-This additional functionality of allocating staking rewards to a third party can be described by three core functions within our smart contract architecture:
-
-- `allocate` adds an amount of INJ from a distributor to a recipient at the current share price.
-- `deallocate` removes part or the entire amount allocated to a recipient from the distributors allocations list. It reduces the distributor's total allocated amount.
-- `distribute_rewards` and `distribute_all` are used to distribute the rewards from an allocation to the corresponding recipients. The distribution can be made in INJ or TruINJ and comes out of the distributor's wallet.
-
-**Notes:**
-The distributor doesn't need to have funds for rewards available at all times in their wallet. The allocation feature keeps track of allocations made but doesn't enforce distribution or solvency.
-Similarly, the distributor can allocate more than their actual balance.
 
 ## Multi-validator support
 
@@ -49,7 +35,6 @@ This prevents adding an invalid owner, which would render the contract without a
 ## Note on minimum deposits
 
 We require users to stake a minimum of 1 INJ every time.
-We also enforce a minimum of 1 INJ on every allocation.
 As we're dealing with institutional clients, we don't expect this to be a problem.
 By design, there is no maximum limit to how much can be deposited by a single user.
 
@@ -71,7 +56,6 @@ We run an off-chain process to periodically restake rewards sitting on the valid
 
 ## Note on validator slashing
 If one of the configured validators incurs a slashing event, the share price will decrease by an amount proportional to the total stake lost.
-This means that users who allocated rewards at a higher share price than the current one may need to wait for the share price to recover before distributing to their recipients.
 Should slashing occur, any stake in the process of unbonding is also subject to the penalty.
 In such cases, our Staker might not hold enough assets to fulfill a withdrawal request immediately, which will result in an error reported to the user.
 To safeguard against these scenarios, we have agreements in place to top up assets in our Staker, ensuring that these requests can be fulfilled as soon as possible.
