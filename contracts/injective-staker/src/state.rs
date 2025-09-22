@@ -1,8 +1,8 @@
 use cosmwasm_schema::cw_serde;
-use cosmwasm_std::{Addr, Uint128, Uint256};
+use cosmwasm_std::{Addr, Uint128};
 use cw20::Expiration;
 use cw_controllers::Claims;
-use cw_storage_plus::{Index, IndexList, IndexedMap, Item, Map, MultiIndex};
+use cw_storage_plus::{Item, Map};
 use std::fmt;
 
 #[cw_serde]
@@ -10,7 +10,6 @@ pub struct StakerInfo {
     pub treasury: Addr,
     pub fee: u16,
     pub min_deposit: u128,
-    pub distribution_fee: u16,
 }
 
 #[cw_serde]
@@ -28,45 +27,11 @@ pub enum ValidatorState {
 }
 
 #[cw_serde]
-pub struct Allocation {
-    pub allocator: Addr,
-    pub recipient: Addr,
-    pub inj_amount: Uint128,
-    pub share_price_num: Uint256,
-    pub share_price_denom: Uint256,
-}
-
-impl Default for Allocation {
-    fn default() -> Self {
-        Self {
-            allocator: Addr::unchecked(""),
-            recipient: Addr::unchecked(""),
-            inj_amount: Uint128::zero(),
-            share_price_num: Uint256::zero(),
-            share_price_denom: Uint256::zero(),
-        }
-    }
-}
-
-pub struct AllocationIndexes<'a> {
-    pub allocator: MultiIndex<'a, Addr, Allocation, (Addr, Addr)>,
-}
-
-impl<'a> IndexList<Allocation> for AllocationIndexes<'a> {
-    fn get_indexes(&'_ self) -> Box<dyn Iterator<Item = &'_ dyn Index<Allocation>> + '_> {
-        Box::new(std::iter::once(&self.allocator as &dyn Index<Allocation>))
-    }
-}
-
-pub fn allocations<'a>() -> IndexedMap<(Addr, Addr), Allocation, AllocationIndexes<'a>> {
-    let indexes = AllocationIndexes {
-        allocator: MultiIndex::new(
-            |_pk: &[u8], d: &Allocation| d.allocator.clone(),
-            "allocations",
-            "allocations__allocator",
-        ),
-    };
-    IndexedMap::new("allocations", indexes)
+pub struct StakerInfoV1 {
+    pub treasury: Addr,
+    pub fee: u16,
+    pub min_deposit: u128,
+    pub distribution_fee: u16,
 }
 
 pub const STAKER_INFO: Item<StakerInfo> = Item::new("staker_info");

@@ -1,8 +1,8 @@
 #[cfg(not(feature = "library"))]
 use cosmwasm_std::entry_point;
 use cosmwasm_std::{
-    ensure, to_json_binary, Addr, BankMsg, Binary, Coin, Deps, DepsMut, Env, Event, MessageInfo,
-    Response, StakingMsg, StdResult, Uint128, Uint256, Uint512, WasmMsg,
+    ensure, to_json_binary, Addr, Binary, Coin, Deps, DepsMut, Env, Event, MessageInfo, Response,
+    StakingMsg, StdError, StdResult, Uint128, Uint256, Uint512, WasmMsg,
 };
 use cw2::set_contract_version;
 use cw20::{LogoInfo, MarketingInfoResponse};
@@ -11,16 +11,14 @@ use cw20_base::contract::{
     query_marketing_info, query_token_info,
 };
 use cw20_base::state::{MinterData, TokenInfo, MARKETING_INFO, TOKEN_INFO};
-use execute::{set_distribution_fee, set_fee, set_min_deposit};
-use query::get_total_allocated;
+use execute::{set_fee, set_min_deposit};
 
 use crate::error::ContractError;
 use crate::msg::{
-    ExecuteMsg, GetDistributionAmountsResponse, GetSharePriceResponse, GetStakerInfoResponse,
-    InstantiateMsg, MigrateMsg, QueryMsg,
+    ExecuteMsg, GetSharePriceResponse, GetStakerInfoResponse, InstantiateMsg, MigrateMsg, QueryMsg,
 };
 use crate::state::{
-    allocations, Allocation, GetValueTrait, StakerInfo, ValidatorState, CLAIMS, CONTRACT_REWARDS,
+    GetValueTrait, StakerInfo, StakerInfoV1, ValidatorState, CLAIMS, CONTRACT_REWARDS,
     DEFAULT_VALIDATOR, IS_PAUSED, OWNER, STAKER_INFO, VALIDATORS,
 };
 use crate::{whitelist, FEE_PRECISION, INJ, ONE_INJ, SHARE_PRICE_SCALING_FACTOR, UNBONDING_PERIOD};
@@ -32,6 +30,26 @@ const CONTRACT_VERSION: &str = env!("CARGO_PKG_VERSION");
 #[cfg_attr(not(feature = "library"), entry_point)]
 pub fn migrate(deps: DepsMut, _env: Env, _msg: MigrateMsg) -> Result<Response, ContractError> {
     cw2::ensure_from_older_version(deps.storage, CONTRACT_NAME, CONTRACT_VERSION)?;
+    // Load the old data
+    let Some(old_data) = deps.storage.get(b"staker_info") else {
+        return Err(ContractError::Std(StdError::generic_err("Data not found")));
+    };
+
+    // Deserialize it from the old format
+    let old_data: StakerInfoV1 = cosmwasm_std::from_json(&old_data)?;
+
+    // Transform it
+    let new_data = StakerInfo {
+        treasury: old_data.treasury,
+        fee: old_data.fee,
+        min_deposit: old_data.min_deposit,
+    };
+
+    // Serialize the new data
+    let new_data = cosmwasm_std::to_json_vec(&new_data)?;
+
+    // Store the new data
+    deps.storage.set(b"staker_info", &new_data);
     Ok(Response::default())
 }
 
@@ -60,7 +78,6 @@ pub fn instantiate(
     let staker_info = StakerInfo {
         treasury: treasury_addr,
         fee: 0,
-        distribution_fee: 0,
         min_deposit: ONE_INJ,
     };
 
@@ -122,9 +139,6 @@ pub fn execute(
 ) -> Result<Response, ContractError> {
     match msg {
         ExecuteMsg::SetFee { new_fee } => set_fee(deps, info.sender, new_fee),
-        ExecuteMsg::SetDistributionFee {
-            new_distribution_fee,
-        } => set_distribution_fee(deps, info.sender, new_distribution_fee),
         ExecuteMsg::SetMinimumDeposit { new_min_deposit } => {
             set_min_deposit(deps, info.sender, new_min_deposit)
         }
@@ -199,19 +213,6 @@ pub fn execute(
             validator_addr,
         } => execute::_restake(deps, env, info.sender, amount, validator_addr),
         ExecuteMsg::EmitEvent { attributes } => execute::_emit_event(env, info.sender, attributes),
-        ExecuteMsg::Allocate { recipient, amount } => {
-            execute::allocate(deps, env, info.sender, &recipient, amount)
-        }
-        ExecuteMsg::Deallocate { recipient, amount } => {
-            execute::deallocate(deps, info.sender, &recipient, amount)
-        }
-        ExecuteMsg::DistributeRewards { recipient, in_inj } => {
-            execute::distribute_rewards(deps, env, info, &recipient, in_inj)
-        }
-        #[cfg(any(test, feature = "test"))]
-        ExecuteMsg::TestAllocate { recipient, amount } => {
-            test_allocate(deps, env, info.sender, &recipient, amount)
-        }
         #[cfg(any(test, feature = "test"))]
         ExecuteMsg::TestMint { recipient, amount } => {
             let contract_addr = env.contract.address.clone();
@@ -226,13 +227,12 @@ pub fn execute(
 
 pub mod execute {
     use cosmwasm_std::{Attribute, BankMsg, DistributionMsg, WasmMsg};
-    use query::{get_share_price, get_total_allocated};
 
     use super::*;
 
     use crate::FEE_PRECISION;
 
-    use crate::state::{Allocation, IS_PAUSED, PENDING_OWNER};
+    use crate::state::{IS_PAUSED, PENDING_OWNER};
 
     /// Sets the treasury fee charged on rewards.
     pub fn set_fee(deps: DepsMut, sender: Addr, new_fee: u16) -> Result<Response, ContractError> {
@@ -251,33 +251,6 @@ pub mod execute {
             Event::new("set_fee")
                 .add_attribute("old_fee", old_fee.to_string())
                 .add_attribute("new_fee", new_fee.to_string()),
-        ))
-    }
-
-    /// Sets the treasury fee charged on rewards distribution.
-    pub fn set_distribution_fee(
-        deps: DepsMut,
-        sender: Addr,
-        new_distribution_fee: u16,
-    ) -> Result<Response, ContractError> {
-        check_owner(deps.as_ref(), &sender)?;
-
-        ensure!(
-            new_distribution_fee < FEE_PRECISION,
-            ContractError::FeeTooLarge
-        );
-
-        let old_distribution_fee = STAKER_INFO.load(deps.storage)?.distribution_fee;
-
-        STAKER_INFO.update(deps.storage, |mut state| -> Result<_, ContractError> {
-            state.distribution_fee = new_distribution_fee;
-            Ok(state)
-        })?;
-
-        Ok(Response::new().add_event(
-            Event::new("set_distribution_fee")
-                .add_attribute("old_distribution_fee", old_distribution_fee.to_string())
-                .add_attribute("new_distribution_fee", new_distribution_fee.to_string()),
         ))
     }
 
@@ -448,214 +421,6 @@ pub mod execute {
                 .add_attribute("current_owner", sender)
                 .add_attribute("pending_owner", new_owner),
         ))
-    }
-
-    /// Allocates INJ staking rewards to the recipient.
-    pub fn allocate(
-        deps: DepsMut,
-        env: Env,
-        sender: Addr,
-        recipient: &String,
-        amount: Uint128,
-    ) -> Result<Response, ContractError> {
-        check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), &sender)?;
-        let recipient_addr = deps.api.addr_validate(recipient)?;
-
-        ensure!(recipient_addr != sender, ContractError::InvalidRecipient {});
-        ensure!(
-            amount.u128() >= ONE_INJ,
-            ContractError::AllocationUnderOneInj {}
-        );
-        let share_price_response = get_share_price(deps.as_ref(), &env.contract.address);
-        let recipient_allocation = allocations().update(
-            deps.storage,
-            (sender.clone(), recipient_addr.clone()),
-            |existing| -> Result<_, ContractError> {
-                existing.map_or_else(
-                    // if the user has no allocations to the recipient, create a new one
-                    || {
-                        Ok(Allocation {
-                            allocator: sender.clone(),
-                            recipient: recipient_addr.clone(),
-                            inj_amount: amount,
-                            share_price_num: share_price_response.numerator,
-                            share_price_denom: share_price_response.denominator,
-                        })
-                    },
-                    |allocation| {
-                        // if the user has an allocation to the recipient, update it to reflect the new amount and share price
-                        let updated_allocation = calculate_updated_allocation(
-                            &allocation,
-                            amount,
-                            share_price_response.numerator,
-                            share_price_response.denominator,
-                        )?;
-                        Ok(updated_allocation)
-                    },
-                )
-            },
-        )?;
-
-        let total_allocated_response = get_total_allocated(deps.as_ref(), sender.clone())?;
-
-        Ok(Response::new().add_event(
-            Event::new("allocated")
-                .add_attribute("user", sender)
-                .add_attribute("recipient", recipient)
-                .add_attribute("amount", amount)
-                .add_attribute("total_amount", recipient_allocation.inj_amount)
-                .add_attribute("share_price_num", recipient_allocation.share_price_num)
-                .add_attribute("share_price_denom", recipient_allocation.share_price_denom)
-                .add_attribute(
-                    "total_allocated_amount",
-                    total_allocated_response.total_allocated_amount,
-                )
-                .add_attribute(
-                    "total_allocated_share_price_num",
-                    total_allocated_response.total_allocated_share_price_num,
-                )
-                .add_attribute(
-                    "total_allocated_share_price_denom",
-                    total_allocated_response.total_allocated_share_price_denom,
-                ),
-        ))
-    }
-
-    /// Deallocates INJ staking rewards from the recipient.
-    pub fn deallocate(
-        deps: DepsMut,
-        sender: Addr,
-        recipient: &String,
-        amount: Uint128,
-    ) -> Result<Response, ContractError> {
-        check_not_paused(deps.as_ref())?;
-        whitelist::check_whitelisted(deps.as_ref(), &sender)?;
-
-        let recipient_addr = deps.api.addr_validate(recipient)?;
-
-        let mut allocation = allocations()
-            .load(deps.storage, (sender.clone(), recipient_addr.clone()))
-            .map_err(|_| ContractError::NoAllocationToRecipient)?;
-
-        ensure!(
-            allocation.inj_amount >= amount,
-            ContractError::ExcessiveDeallocation {}
-        );
-
-        let remaining_amount = allocation.inj_amount - amount;
-        if remaining_amount.is_zero() {
-            allocations().replace(
-                deps.storage,
-                (sender.clone(), recipient_addr),
-                None,
-                Some(&allocation),
-            )?;
-        } else {
-            ensure!(
-                remaining_amount.u128() >= ONE_INJ,
-                ContractError::AllocationUnderOneInj {}
-            );
-
-            #[allow(clippy::redundant_clone)]
-            let old_allocation = allocation.clone();
-            allocation.inj_amount = remaining_amount;
-            allocations().replace(
-                deps.storage,
-                (sender.clone(), recipient_addr),
-                Some(&allocation),
-                Some(&old_allocation),
-            )?;
-        }
-
-        let total_allocated_response = get_total_allocated(deps.as_ref(), sender.clone())?;
-
-        Ok(Response::new().add_event(
-            Event::new("deallocated")
-                .add_attribute("user", sender)
-                .add_attribute("recipient", recipient)
-                .add_attribute("amount", amount)
-                .add_attribute("total_amount", remaining_amount)
-                .add_attribute("share_price_num", allocation.share_price_num)
-                .add_attribute("share_price_denom", allocation.share_price_denom)
-                .add_attribute(
-                    "total_allocated_amount",
-                    total_allocated_response.total_allocated_amount,
-                )
-                .add_attribute(
-                    "total_allocated_share_price_num",
-                    total_allocated_response.total_allocated_share_price_num,
-                )
-                .add_attribute(
-                    "total_allocated_share_price_denom",
-                    total_allocated_response.total_allocated_share_price_denom,
-                ),
-        ))
-    }
-
-    /// Distribute allocation rewards from the caller to the specified recipient.
-    pub fn distribute_rewards(
-        mut deps: DepsMut,
-        env: Env,
-        info: MessageInfo,
-        recipient: &str,
-        in_inj: bool,
-    ) -> Result<Response, ContractError> {
-        check_not_paused(deps.as_ref())?;
-        let distributor = info.sender.clone();
-        whitelist::check_whitelisted(deps.as_ref(), &distributor)?;
-
-        let recipient_addr = deps.api.addr_validate(recipient)?;
-
-        ensure!(
-            !allocations()
-                .prefix(distributor.clone())
-                .is_empty(deps.storage),
-            ContractError::NoAllocations
-        );
-
-        // get the allocation to the recipient
-        let allocation = allocations()
-            .load(deps.storage, (distributor.clone(), recipient_addr))
-            .map_err(|_| ContractError::NoAllocationToRecipient)?;
-
-        // distribute rewards for the current share price
-        let contract_addr = env.contract.address.clone();
-        let share_price = get_share_price(deps.as_ref(), &contract_addr);
-        let attached_inj_amount = cw_utils::may_pay(&info, INJ)?.u128();
-
-        let mut response = Response::new();
-
-        // No distribution is needed if the share price of the allocation is the same as the global share price,
-        // or if it's higher due to slashing.
-        if allocation.share_price_num / allocation.share_price_denom
-            >= share_price.numerator / share_price.denominator
-        {
-            if attached_inj_amount > 0 {
-                response = response.add_message(BankMsg::Send {
-                    to_address: distributor.to_string(),
-                    amount: vec![Coin {
-                        denom: INJ.to_string(),
-                        amount: attached_inj_amount.into(),
-                    }],
-                })
-            }
-            return Ok(response);
-        }
-
-        let staker_info = STAKER_INFO.load(deps.storage)?;
-
-        let distribution_response = internal_distribute(
-            deps.branch(),
-            env,
-            allocation,
-            in_inj,
-            &share_price,
-            attached_inj_amount,
-            &staker_info,
-        )?;
-
-        Ok(distribution_response)
     }
 
     /// Allows a user to withdraw all their expired claims.
@@ -1017,23 +782,6 @@ pub fn query(deps: Deps, env: Env, msg: QueryMsg) -> StdResult<Binary> {
             env,
             deps.api.addr_validate(&user)?,
         )?),
-        QueryMsg::GetAllocations { user } => to_json_binary(&query::get_allocations(
-            deps,
-            deps.api.addr_validate(&user)?,
-        )?),
-        QueryMsg::GetTotalAllocated { user } => to_json_binary(&query::get_total_allocated(
-            deps,
-            deps.api.addr_validate(&user)?,
-        )?),
-        QueryMsg::GetDistributionAmounts {
-            distributor,
-            recipient,
-        } => to_json_binary(&query::get_distribution_amounts(
-            deps,
-            env.contract.address,
-            &distributor,
-            recipient.as_ref(),
-        )?),
     }
 }
 
@@ -1042,9 +790,9 @@ pub mod query {
     use cw_controllers::ClaimsResponse;
 
     use crate::msg::{
-        GetAllocationsResponse, GetClaimableAmountResponse, GetMaxWithdrawResponse,
-        GetTotalAllocatedResponse, GetTotalAssetsResponse, GetTotalRewardsResponse,
-        GetTotalStakedResponse, GetTotalSupplyResponse, GetValidatorResponse,
+        GetClaimableAmountResponse, GetMaxWithdrawResponse, GetTotalAssetsResponse,
+        GetTotalRewardsResponse, GetTotalStakedResponse, GetTotalSupplyResponse,
+        GetValidatorResponse,
     };
 
     use super::*;
@@ -1052,7 +800,7 @@ pub mod query {
         GetCurrentUserStatusResponse, GetIsAgentResponse, GetIsBlacklistedResponse,
         GetIsOwnerResponse, GetIsWhitelistedResponse,
     };
-    use crate::state::{Allocation, ValidatorInfo, VALIDATORS};
+    use crate::state::{ValidatorInfo, VALIDATORS};
     use cosmwasm_std::Addr;
 
     /// Returns staker info.
@@ -1063,7 +811,6 @@ pub mod query {
             default_validator: DEFAULT_VALIDATOR.load(deps.storage)?,
             treasury: staker_info.treasury.to_string(),
             fee: staker_info.fee,
-            distribution_fee: staker_info.distribution_fee,
             min_deposit: staker_info.min_deposit.into(),
             is_paused: IS_PAUSED.load(deps.storage)?,
         })
@@ -1249,113 +996,6 @@ pub mod query {
             numerator: share_price_num,
             denominator: share_price_denom,
         }
-    }
-
-    /// Returns all allocations for a given user.
-    pub fn get_allocations(deps: Deps, allocator: Addr) -> StdResult<GetAllocationsResponse> {
-        let allocations: Vec<Allocation> = allocations()
-            .idx
-            .allocator
-            .prefix(allocator)
-            .range(deps.storage, None, None, Order::Ascending)
-            .map(|item| item.map(|(_, allocation)| allocation))
-            .collect::<StdResult<Vec<_>>>()?;
-
-        Ok(GetAllocationsResponse { allocations })
-    }
-
-    /// Returns the total amount of INJ allocated by a user and their average allocation share price.
-    pub fn get_total_allocated(deps: Deps, user: Addr) -> StdResult<GetTotalAllocatedResponse> {
-        let allocations = allocations()
-            .idx
-            .allocator
-            .prefix(user)
-            .range(deps.storage, None, None, Order::Ascending)
-            .map(|item| item.map(|(_, allocation)| allocation))
-            .collect::<StdResult<Vec<_>>>()?;
-
-        let total_allocation = allocations
-            .into_iter()
-            .reduce(|acc, allocation| {
-                calculate_updated_allocation(
-                    &acc,
-                    allocation.inj_amount,
-                    allocation.share_price_num,
-                    allocation.share_price_denom,
-                )
-                .unwrap()
-            })
-            .unwrap_or_default();
-
-        Ok(GetTotalAllocatedResponse {
-            total_allocated_amount: total_allocation.inj_amount,
-            total_allocated_share_price_num: total_allocation.share_price_num,
-            total_allocated_share_price_denom: total_allocation.share_price_denom,
-        })
-    }
-
-    /// Returns the amounts of INJ and TruINJ that a user needs to hold in order to distribute to a recipient or all recipients.
-    /// Also returns the distribution fee, in TruINJ, that will be paid to the treasury.
-    pub fn get_distribution_amounts(
-        deps: Deps,
-        contract_address: Addr,
-        distributor: &str,
-        recipient: Option<&String>,
-    ) -> StdResult<GetDistributionAmountsResponse> {
-        let distributor = deps.api.addr_validate(distributor).unwrap();
-        let recipient = recipient.map(|r| deps.api.addr_validate(r).unwrap());
-
-        let share_price = get_share_price(deps, &contract_address);
-        let fee = STAKER_INFO.load(deps.storage)?.distribution_fee;
-
-        let (total_inj_amount, total_truinj_amount, total_fees) = if let Some(recipient) = recipient
-        {
-            let allocation = match allocations().may_load(deps.storage, (distributor, recipient))? {
-                Some(allocation) => allocation,
-                None => {
-                    return Ok(GetDistributionAmountsResponse {
-                        inj_amount: Uint128::zero(),
-                        truinj_amount: Uint128::zero(),
-                        distribution_fee: Uint128::zero(),
-                    });
-                }
-            };
-
-            let (inj_amount, truinj_amount, fees) = calculate_distribution_amounts(
-                &allocation,
-                share_price.numerator,
-                share_price.denominator,
-                fee,
-            )
-            .unwrap();
-
-            (inj_amount, truinj_amount, fees)
-        } else {
-            let (total_inj_amount, total_truinj_amount, total_fees) = allocations()
-                .idx
-                .allocator
-                .prefix(distributor)
-                .range(deps.storage, None, None, Order::Ascending)
-                .fold((0, 0, 0), |acc, item| {
-                    let (_, allocation) = item.unwrap();
-                    let (inj_amount, truinj_amount, fees) = calculate_distribution_amounts(
-                        &allocation,
-                        share_price.numerator,
-                        share_price.denominator,
-                        fee,
-                    )
-                    .unwrap();
-                    (acc.0 + inj_amount, acc.1 + truinj_amount, acc.2 + fees)
-                });
-
-            (total_inj_amount, total_truinj_amount, total_fees)
-        };
-
-        Ok(GetDistributionAmountsResponse {
-            inj_amount: total_inj_amount.into(),
-            truinj_amount: total_truinj_amount.into(),
-            distribution_fee: total_fees.into(),
-        })
     }
 }
 
@@ -1870,167 +1510,6 @@ fn internal_share_price(
     (price_num, price_denom)
 }
 
-/// Distributes rewards for the given allocation.
-fn internal_distribute(
-    mut deps: DepsMut,
-    env: Env,
-    allocation: Allocation,
-    in_inj: bool,
-    global_share_price: &GetSharePriceResponse,
-    attached_inj_amount: u128,
-    staker_info: &StakerInfo,
-) -> Result<Response, ContractError> {
-    let dist_fee = staker_info.distribution_fee;
-    let treasury = &staker_info.treasury;
-    let mut refund_amount = attached_inj_amount;
-
-    let (assets_to_distribute, shares_to_distribute, fees) = calculate_distribution_amounts(
-        &allocation,
-        global_share_price.numerator,
-        global_share_price.denominator,
-        dist_fee,
-    )?;
-
-    let mut response = Response::new();
-    if in_inj {
-        ensure!(
-            attached_inj_amount >= assets_to_distribute,
-            ContractError::InsufficientInjAttached
-        );
-        ensure!(
-            query_balance(deps.as_ref(), allocation.allocator.clone().into_string())?
-                .balance
-                .u128()
-                >= fees,
-            ContractError::InsufficientTruINJBalance
-        );
-
-        // return the message to send INJ to the recipient
-        response = response.add_message(BankMsg::Send {
-            to_address: allocation.recipient.to_string(),
-            amount: vec![Coin {
-                denom: INJ.to_string(),
-                amount: assets_to_distribute.into(),
-            }],
-        });
-        refund_amount -= assets_to_distribute;
-    } else {
-        // check that the distributor has enough TruINJ to distribute and pay the fees
-        ensure!(
-            query_balance(deps.as_ref(), allocation.allocator.clone().into_string())?
-                .balance
-                .u128()
-                >= shares_to_distribute + fees,
-            ContractError::InsufficientTruINJBalance
-        );
-
-        // transfer the rewards in TruINJ to the recipient
-        let transfer_res = execute_transfer(
-            deps.branch(),
-            env.clone(),
-            MessageInfo {
-                sender: allocation.allocator.clone(),
-                funds: vec![],
-            },
-            allocation.recipient.to_string(),
-            Uint128::from(shares_to_distribute),
-        )?;
-
-        let transfer_event_msg = to_json_binary(&ExecuteMsg::EmitEvent {
-            attributes: transfer_res.attributes,
-        })?;
-
-        let cw_20_msg = WasmMsg::Execute {
-            contract_addr: env.contract.address.clone().into_string(),
-            msg: transfer_event_msg,
-            funds: vec![],
-        };
-        response = response.add_message(cw_20_msg);
-    };
-
-    // transfer fees to the treasury
-    if fees > 0 {
-        // transfer the rewards in TruINJ to the recipient
-        let transfer_fee_res = execute_transfer(
-            deps.branch(),
-            env.clone(),
-            MessageInfo {
-                sender: allocation.allocator.clone(),
-                funds: vec![],
-            },
-            treasury.to_string(),
-            Uint128::from(fees),
-        )?;
-
-        let transfer_fee_event_msg = to_json_binary(&ExecuteMsg::EmitEvent {
-            attributes: transfer_fee_res.attributes,
-        })?;
-
-        let cw_20_msg = WasmMsg::Execute {
-            contract_addr: env.contract.address.into_string(),
-            msg: transfer_fee_event_msg,
-            funds: vec![],
-        };
-        response = response.add_message(cw_20_msg);
-    }
-
-    // update the share price of the allocation
-    allocations().update(
-        deps.storage,
-        (allocation.allocator.clone(), allocation.recipient.clone()),
-        |existing| -> Result<_, ContractError> {
-            let mut updated_alloc = existing.unwrap();
-            updated_alloc.share_price_num = global_share_price.numerator;
-            updated_alloc.share_price_denom = global_share_price.denominator;
-            Ok(updated_alloc)
-        },
-    )?;
-
-    if refund_amount > 0 {
-        response = response.add_message(BankMsg::Send {
-            to_address: allocation.allocator.to_string(),
-            amount: vec![Coin {
-                denom: INJ.to_string(),
-                amount: refund_amount.into(),
-            }],
-        });
-    }
-
-    let total_allocated = get_total_allocated(deps.as_ref(), allocation.allocator.clone())?;
-    let recipient_balance =
-        query_balance(deps.as_ref(), allocation.recipient.clone().into_string())?.balance;
-    let treasury_balance = query_balance(deps.as_ref(), treasury.clone().into_string())?.balance;
-    let user_balance =
-        query_balance(deps.as_ref(), allocation.allocator.clone().into_string())?.balance;
-
-    let distribution_event = Event::new("distributed_rewards")
-        .add_attribute("user", allocation.allocator.clone())
-        .add_attribute("recipient", allocation.recipient)
-        .add_attribute("user_balance", user_balance.to_string())
-        .add_attribute("recipient_balance", recipient_balance.to_string())
-        .add_attribute("treasury_balance", treasury_balance.to_string())
-        .add_attribute("fees", fees.to_string())
-        .add_attribute("shares", shares_to_distribute.to_string())
-        .add_attribute("inj_amount", assets_to_distribute.to_string())
-        .add_attribute("in_inj", in_inj.to_string())
-        .add_attribute("share_price_num", global_share_price.numerator)
-        .add_attribute("share_price_denom", global_share_price.denominator)
-        .add_attribute(
-            "total_allocated_amount",
-            total_allocated.total_allocated_amount,
-        )
-        .add_attribute(
-            "total_allocated_share_price_num",
-            total_allocated.total_allocated_share_price_num,
-        )
-        .add_attribute(
-            "total_allocated_share_price_denom",
-            total_allocated.total_allocated_share_price_denom,
-        );
-
-    Ok(response.add_event(distribution_event))
-}
-
 /// Mints fees to the treasury for the amount of staking rewards provided.
 fn calculate_treasury_fees(
     rewards: u128,
@@ -2046,105 +1525,6 @@ fn calculate_treasury_fees(
     let treasury_shares_increase =
         convert_to_shares(Uint128::from(fees), share_price_num, share_price_denom)?;
     Ok(treasury_shares_increase)
-}
-
-/// Calculates the updated allocation values.
-fn calculate_updated_allocation(
-    existing: &Allocation,
-    amount: Uint128,
-    global_share_price_num: Uint256,
-    global_share_price_denom: Uint256,
-) -> Result<Allocation, ContractError> {
-    let mul_lhs = Uint512::from(existing.inj_amount)
-        * Uint512::from(SHARE_PRICE_SCALING_FACTOR)
-        * Uint512::from(existing.share_price_denom);
-    let denominator_lhs = Uint256::try_from(mul_lhs.checked_div(existing.share_price_num.into())?)?;
-
-    let mul_rhs = Uint512::from(amount)
-        * Uint512::from(SHARE_PRICE_SCALING_FACTOR)
-        * Uint512::from(global_share_price_denom);
-    let denominator_rhs = Uint256::try_from(mul_rhs.checked_div(global_share_price_num.into())?)?;
-
-    let share_price_denom = denominator_lhs + denominator_rhs;
-
-    let share_price_num = (Uint256::from(existing.inj_amount) + Uint256::from(amount))
-        * Uint256::from(SHARE_PRICE_SCALING_FACTOR);
-
-    Ok(Allocation {
-        allocator: existing.allocator.clone(),
-        recipient: existing.recipient.clone(),
-        inj_amount: existing.inj_amount + amount,
-        share_price_num,
-        share_price_denom,
-    })
-}
-
-/// For a given allocation returns a tuple containing the amount of INJ and TruINJ required for the distribution,
-/// as well as the fees in TruINJ that will be paid to the treasury.
-fn calculate_distribution_amounts(
-    allocation: &Allocation,
-    global_price_num: Uint256,
-    global_price_denom: Uint256,
-    distribution_fee: u16,
-) -> Result<(u128, u128, u128), ContractError> {
-    let alloc_amount = Uint512::from(allocation.inj_amount);
-    let alloc_share_price_num = Uint512::from(allocation.share_price_num);
-    let alloc_share_price_denom =
-        Uint512::from(allocation.share_price_denom) * Uint512::from(SHARE_PRICE_SCALING_FACTOR);
-
-    let global_share_price_num = Uint512::from(global_price_num);
-    let global_share_price_denom =
-        Uint512::from(global_price_denom) * Uint512::from(SHARE_PRICE_SCALING_FACTOR);
-
-    let shares_before_fees = Uint128::try_from(
-        alloc_amount * alloc_share_price_denom / alloc_share_price_num
-            - alloc_amount * global_share_price_denom / global_share_price_num,
-    )?
-    .u128();
-
-    // calculate the distribution fees in TruINJ to mint to the treasury
-    let fees: u128 = shares_before_fees * distribution_fee as u128 / FEE_PRECISION as u128;
-
-    // calculate the net shares to distribute
-    let shares_to_distribute = shares_before_fees - fees;
-
-    // convert the shares to INJ
-    let assets_to_distribute = convert_to_assets(
-        shares_to_distribute,
-        global_price_num,
-        global_price_denom,
-        false,
-    )?;
-
-    Ok((assets_to_distribute, shares_to_distribute, fees))
-}
-
-#[cfg(any(test, feature = "test"))]
-pub fn test_allocate(
-    deps: DepsMut,
-    env: Env,
-    distributor: Addr,
-    recipient: &str,
-    amount: Uint128,
-) -> Result<Response, ContractError> {
-    use query::get_share_price;
-
-    let recipient_addr = deps.api.addr_validate(recipient)?;
-
-    let share_price_response = get_share_price(deps.as_ref(), &env.contract.address);
-    allocations().save(
-        deps.storage,
-        (distributor.clone(), recipient_addr.clone()),
-        &Allocation {
-            allocator: distributor,
-            recipient: recipient_addr,
-            inj_amount: amount,
-            share_price_num: share_price_response.numerator,
-            share_price_denom: share_price_response.denominator,
-        },
-    )?;
-
-    Ok(Response::new().add_event(Event::new("allocated")))
 }
 
 #[cfg(any(test, feature = "test"))]

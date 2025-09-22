@@ -35,7 +35,6 @@ mod staker_init {
                 owner: owner.to_string(),
                 treasury: treasury.to_string(),
                 fee: 0,
-                distribution_fee: 0,
                 min_deposit: ONE_INJ.into(),
                 is_paused: false,
             }
