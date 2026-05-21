@@ -20,6 +20,17 @@ The price of TruINJ (aka the share price) is function of the total staked across
 **Notes:**
 Validators can be disabled by the admin account but not deleted.
 
+## Known Cosmos unbonding-entry limit (`max_entries = 7`)
+
+Cosmos chains enforce a per-delegator/per-validator cap on concurrent unbonding entries (`max_entries`, currently `7` on Injective). This is a documented chain-level parameter inherited by all pooled delegators and is not a bug in this contract or in Injective.
+
+Implications for this vault:
+- A validator can temporarily reject new unstakes once all 7 entries are in use.
+- This does not cause loss of funds: user shares remain intact and `max_withdraw` accounting is preserved.
+- Capacity restores automatically as existing unbonding entries mature.
+
+We treat this as a known and accepted operational property of pooled liquid staking.
+
 ## Extra security features
 
 ### Pausability
