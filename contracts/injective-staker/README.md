@@ -10,6 +10,8 @@ Users of our vault must be whitelisted to ensure they have completed offline AML
 The contract will verify if the user is included in our whitelist at the time operations such as staking, unstaking, and others are performed.
 The use of a whitelist grants TruFin permission to revoke a whitelist status for a malicious user in order to protect the overall integrity of the protocol.
 
+The whitelist is managed by **agents**. Any existing agent may add or remove other agents (the caller must already be an agent). Agent management is a role distinct from the contract `owner`; adding or removing an agent does not change ownership or put any user funds at risk.
+
 ## Multi-validator support
 
 The `injective-staker` contract supports the addition of multiple validators.
@@ -64,6 +66,10 @@ The share price is calculated to already reflect this in order to avoid share pr
 ## Note on restaking
 
 We run an off-chain process to periodically restake rewards sitting on the validators, and those that were sent to the contract during staking and unstaking operations.
+
+## Note on the `CONTRACT_REWARDS` accounting
+
+`CONTRACT_REWARDS` tracks the liquid INJ that has already been swept into the contract and is awaiting restaking. It is **not** a global tally of all validator rewards: rewards still accruing on the validators are queried live and counted separately when computing the share price, so the two are never double-counted. When a user stakes, `internal_stake` sweeps the current `CONTRACT_REWARDS` into the delegation and then resets `CONTRACT_REWARDS` to the validator's liquid rewards returned during that operation; this reset is intentional, not an overwrite. The on-chain `CompoundRewards` entry point that restakes accrued rewards is **permissionless** by design — anyone may call it — so rewards never sit idle waiting on a privileged caller.
 
 ## Note on validator slashing
 If one of the configured validators incurs a slashing event, the share price will decrease by an amount proportional to the total stake lost.

@@ -594,6 +594,10 @@ pub mod execute {
     }
 
     /// Restakes rewards on all validators and sweeps contract rewards back into the default validator.
+    ///
+    /// Permissionless by design: this entry point takes no caller and performs no access check, so
+    /// anyone may trigger compounding. This is intentional — it prevents accrued rewards from sitting
+    /// idle and cannot harm users. See "Note on the `CONTRACT_REWARDS` accounting" in the README.
     pub fn compound_rewards(mut deps: DepsMut, env: Env) -> Result<Response, ContractError> {
         let contract_addr = env.contract.address.clone();
         let mut total_rewards = 0u128;
@@ -1058,6 +1062,11 @@ fn get_total_staked_and_rewards(
 }
 
 /// Stakes the attached INJ to the specified validator.
+///
+/// Sweeps the current CONTRACT_REWARDS into this delegation and then resets CONTRACT_REWARDS to the
+/// validator's liquid rewards returned during the stake. The reset is intentional, not an overwrite:
+/// CONTRACT_REWARDS only tracks liquid INJ swept into the contract, while validator-side pending
+/// rewards are accounted separately in the share price. See the README.
 fn internal_stake(
     mut deps: DepsMut,
     env: Env,
