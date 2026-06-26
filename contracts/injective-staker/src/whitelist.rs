@@ -4,6 +4,9 @@ use error::ContractError;
 use state::{UserStatus, OWNER, WHITELIST_AGENTS, WHITELIST_USERS};
 
 /// Adds an agent to the whitelist.
+///
+/// Any existing agent may add another agent (the caller must already be an agent). Agent management
+/// is a role distinct from the contract owner. See "Whitelist" in the README.
 pub fn add_agent(
     deps: DepsMut,
     caller: Addr,
