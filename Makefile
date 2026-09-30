@@ -1,7 +1,7 @@
 RFLAGS="-C link-arg=-s"
 
 build-staker:
-	rustup override	set 1.84.0
+	rustup override	set 1.89.0
 	rustup target add wasm32-unknown-unknown
 	RUSTFLAGS=$(RFLAGS) cargo build -p injective-staker
 
