@@ -1067,6 +1067,11 @@ fn get_total_staked_and_rewards(
 /// validator's liquid rewards returned during the stake. The reset is intentional, not an overwrite:
 /// CONTRACT_REWARDS only tracks liquid INJ swept into the contract, while validator-side pending
 /// rewards are accounted separately in the share price. See the README.
+///
+/// The treasury fee is minted on the rewards this delegation realizes (the target validator's), not on
+/// the all-validator total_rewards used to price the user's shares. Fees on other validators' pending
+/// rewards stay reserved in the share price until a later operation realizes them, so the same rewards
+/// are never charged a fee twice.
 fn internal_stake(
     mut deps: DepsMut,
     env: Env,

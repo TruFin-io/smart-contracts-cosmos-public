@@ -24,14 +24,15 @@ Validators can be disabled by the admin account but not deleted.
 
 ## Known Cosmos unbonding-entry limit (`max_entries = 7`)
 
-Cosmos chains enforce a per-delegator/per-validator cap on concurrent unbonding entries (`max_entries`, currently `7` on Injective). This is a documented chain-level parameter inherited by all pooled delegators and is not a bug in this contract or in Injective.
+Cosmos chains enforce a per-delegator/per-validator cap on concurrent unbonding entries (`max_entries`, currently `7` on Injective). This is a documented chain-level parameter inherited by all pooled delegators and is not a bug in this contract or in Injective. Because the vault delegates as a single account, that cap is shared by all TruINJ holders on a given validator rather than applying per user.
 
 Implications for this vault:
-- A validator can temporarily reject new unstakes once all 7 entries are in use.
-- This does not cause loss of funds: user shares remain intact and `max_withdraw` accounting is preserved.
+- A validator can temporarily reject new unstakes once all 7 entries are in use, whether they filled through ordinary use or because a whitelisted participant chose to fill them.
+- There is no minimum unstake amount, by design, so a user can always exit their full position. It follows that entries can be consumed by arbitrarily small unstakes, and that a participant willing to lock a small amount of INJ can saturate the entries on one validator or on every validator holding stake.
+- This does not cause loss of funds: the chain rejects the undelegation before any balance changes, so the unstake reverts with the user's shares and `max_withdraw` accounting preserved.
 - Capacity restores automatically as existing unbonding entries mature.
 
-We treat this as a known and accepted operational property of pooled liquid staking.
+We treat this as a known and accepted operational property of pooled liquid staking. What bounds it is our permissioning rather than its cost: all users are KYC'd institutional participants known to us by identity, and whitelist status can be revoked, which stops an actor from renewing the condition. Should unstake capacity be exhausted, we can also restore it without waiting for entries to mature, by enabling an additional validator and funding it, either through `Redelegate` or from new deposits. Redelegation entries are tracked separately from unbonding entries and redelegated stake stays bonded, so a newly funded validator offers unused unstake capacity immediately.
 
 ## Extra security features
 
@@ -62,6 +63,8 @@ To cover costs associated with rounding errors, we ensure the staker account is 
 
 The Treasury is an account controlled by TruFin that receives a specified percentage of all rewards. However, instead of sending these rewards to the Treasury, we mint the equivalent amount of TruINJ so that the Treasury can also benefit from staking rewards.
 The share price is calculated to already reflect this in order to avoid share price fluctuations when minting TruINJ for the Treasury.
+
+The fee is minted when rewards are realized into the contract, and always on exactly the rewards that operation realizes: `internal_stake` and `internal_unstake` mint on the rewards returned by the validator they act on, while the permissionless `CompoundRewards` mints on every validator's rewards because it withdraws from all of them. Rewards still pending on validators an operation did not touch therefore have their fee reserved rather than collected: the share price already values those rewards net of the fee (`total_rewards * (FEE_PRECISION - fee)`), so the Treasury's share is never distributed to TruINJ holders, and it is minted once a later operation realizes them. Matching the fee basis to the rewards actually realized is what stops the same rewards being charged a fee twice.
 
 ## Note on restaking
 
